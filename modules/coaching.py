@@ -263,36 +263,75 @@ Respond ONLY with valid JSON."""
     
     def parse_coaching_response(self, response: Dict) -> Dict:
         """
-        Parse LLM response and extract coaching JSON
+        Parse LLM response and extract coaching JSON with robust fallbacks
         Args:
             response: Raw LLM response
         Returns:
             Parsed coaching dict
         """
         try:
-            content = response['choices'][0]['message']['content']
+            content = response['choices'][0]['message']['content'].strip()
             
-            # Try to parse as JSON
+            # Try 1: Direct JSON parse
             try:
                 coaching = json.loads(content)
-                return coaching
-            except json.JSONDecodeError:
-                # Try to extract JSON from markdown code blocks
-                import re
-                json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
-                if json_match:
-                    coaching = json.loads(json_match.group(1))
+                # Validate required fields
+                if all(k in coaching for k in ['root_cause', 'coaching_points', 'sample_script']):
                     return coaching
-                else:
-                    # Fallback: return raw content
-                    return {
-                        "raw_response": content,
-                        "parse_error": "Could not extract JSON"
-                    }
+            except json.JSONDecodeError:
+                pass
+            
+            # Try 2: Extract from markdown code block
+            import re
+            json_match = re.search(r'```(?:json)?\s*(\{.*?\})\s*```', content, re.DOTALL)
+            if json_match:
+                try:
+                    coaching = json.loads(json_match.group(1))
+                    if all(k in coaching for k in ['root_cause', 'coaching_points', 'sample_script']):
+                        return coaching
+                except:
+                    pass
+            
+            # Try 3: Find any JSON object
+            json_match = re.search(r'\{[^{}]*(?:\{[^{}]*\}[^{}]*)*\}', content, re.DOTALL)
+            if json_match:
+                try:
+                    coaching = json.loads(json_match.group(0))
+                    if 'root_cause' in coaching or 'coaching_points' in coaching:
+                        # Fill missing fields
+                        return {
+                            "root_cause": coaching.get('root_cause', 'See raw response'),
+                            "coaching_points": coaching.get('coaching_points', []),
+                            "sample_script": coaching.get('sample_script', 'N/A'),
+                            "kpi_recommendations": coaching.get('kpi_recommendations', []),
+                            "strengths": coaching.get('strengths', []),
+                            "priority": coaching.get('priority', 'Medium')
+                        }
+                except:
+                    pass
+            
+            # Fallback: Create structured response from text
+            lines = [l.strip() for l in content.split('\n') if l.strip()]
+            
+            return {
+                "root_cause": lines[0] if lines else "Unable to parse response",
+                "coaching_points": lines[1:4] if len(lines) > 1 else ["See raw response below"],
+                "sample_script": "N/A",
+                "kpi_recommendations": [],
+                "strengths": [],
+                "priority": "Medium",
+                "raw_response": content[:500]
+            }
+            
         except Exception as e:
             return {
-                "error": f"Failed to parse response: {str(e)}",
-                "raw_response": str(response)
+                "root_cause": f"Parsing error: {str(e)}",
+                "coaching_points": ["Check raw response"],
+                "sample_script": "N/A",
+                "kpi_recommendations": [],
+                "strengths": [],
+                "priority": "Low",
+                "error": str(e)
             }
     
     def generate_coaching(
