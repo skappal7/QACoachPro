@@ -226,7 +226,12 @@ with tabs[1]:
             
             # Initialize CCRE engine
             with st.spinner("Initializing CCRE engine..."):
-                engine = CCREEngine(rules_df)
+                try:
+                    engine = CCREEngine(rules_df)
+                    st.success(f"✅ Loaded {len(rules_df)} rules")
+                except Exception as e:
+                    st.error(f"❌ Failed to initialize engine: {str(e)}")
+                    st.stop()
             
             # Initialize PII redactor
             if enable_pii:
@@ -244,7 +249,7 @@ with tabs[1]:
                 batch_end = min(i + batch_size, total_rows)
                 batch_df = df.iloc[i:batch_end].copy()
                 
-                status_text.text(f"Processing transcripts {i+1} to {batch_end}...")
+                status_text.text(f"Processing transcripts {i+1:,} to {batch_end:,}...")
                 
                 # PII redaction
                 if enable_pii:
@@ -254,18 +259,19 @@ with tabs[1]:
                     batch_df['redacted_transcript'] = batch_df[transcript_col]
                     transcripts_to_classify = batch_df[transcript_col].tolist()
                 
-                # Classification (NO CACHE CHECKING IN LOOP)
+                # Classification (pure processing, no database calls)
                 classifications = engine.classify_batch(transcripts_to_classify)
                 
                 # Add results to dataframe
                 for j, cls in enumerate(classifications):
-                    batch_df.loc[batch_df.index[j], 'category'] = cls['category']
-                    batch_df.loc[batch_df.index[j], 'subcategory'] = cls['subcategory']
-                    batch_df.loc[batch_df.index[j], 'confidence'] = cls['confidence']
-                    batch_df.loc[batch_df.index[j], 'resolve_reason'] = cls['resolve_reason']
-                    batch_df.loc[batch_df.index[j], 'matched_keywords'] = cls['matched_keywords']
-                    batch_df.loc[batch_df.index[j], 'num_rules_activated'] = cls['num_rules_activated']
-                    batch_df.loc[batch_df.index[j], 'transcript_id'] = i + j
+                    idx = batch_df.index[j]
+                    batch_df.loc[idx, 'category'] = cls['category']
+                    batch_df.loc[idx, 'subcategory'] = cls['subcategory']
+                    batch_df.loc[idx, 'confidence'] = cls['confidence']
+                    batch_df.loc[idx, 'resolve_reason'] = cls['resolve_reason']
+                    batch_df.loc[idx, 'matched_keywords'] = cls['matched_keywords']
+                    batch_df.loc[idx, 'num_rules_activated'] = cls['num_rules_activated']
+                    batch_df.loc[idx, 'transcript_id'] = i + j
                 
                 results.append(batch_df)
                 
@@ -278,35 +284,40 @@ with tabs[1]:
             # Calculate processing time
             processing_time = time.time() - start_time
             
-            # BATCH cache write AFTER classification completes
-            if supabase:
-                status_text.text("Caching results...")
-                for idx, row in classified_df.iterrows():
-                    try:
-                        trans_hash = supabase.hash_text(row['redacted_transcript'])
-                        supabase.cache_classification(
-                            trans_hash,
-                            row['category'],
-                            row['subcategory'],
-                            row['confidence'],
-                            row['matched_keywords'],
-                            row['resolve_reason']
-                        )
-                    except:
-                        pass  # Ignore cache errors
-            
             status_text.text("✅ Classification complete!")
             progress_bar.progress(1.0)
             
             # Store in session state
             st.session_state.classified_df = classified_df
             
-            # Log to Supabase
-            supabase.log_upload(
-                st.session_state.uploaded_df.attrs.get('filename', 'unknown.csv'),
-                len(classified_df),
-                processing_time
-            )
+            # Background: Cache results to Supabase (non-blocking, ignore errors)
+            if supabase and len(classified_df) <= 10000:  # Only cache small datasets
+                with st.spinner("Caching results..."):
+                    cached_count = 0
+                    for _, row in classified_df.head(1000).iterrows():  # Cache max 1000 rows
+                        try:
+                            trans_hash = supabase.hash_text(str(row['redacted_transcript']))
+                            if supabase.cache_classification(
+                                trans_hash,
+                                row['category'],
+                                row['subcategory'],
+                                row['confidence'],
+                                row['matched_keywords'],
+                                row['resolve_reason']
+                            ):
+                                cached_count += 1
+                        except:
+                            pass  # Silently ignore cache errors
+                    
+                    if cached_count > 0:
+                        st.info(f"💾 Cached {cached_count} results for faster future processing")
+            
+            # Log upload history
+            try:
+                filename = getattr(transcripts_file, 'name', 'unknown.csv')
+                supabase.log_upload(filename, len(classified_df), processing_time)
+            except:
+                pass
             
             # Success metrics
             st.markdown("---")
@@ -316,29 +327,54 @@ with tabs[1]:
             
             col1.metric("Total Processed", f"{len(classified_df):,}")
             col2.metric("Processing Time", f"{processing_time:.1f}s")
-            col3.metric("Avg Time/Transcript", f"{(processing_time/len(classified_df)*1000):.1f}ms")
+            col3.metric("Speed", f"{(processing_time/len(classified_df)*1000):.0f}ms/transcript")
             col4.metric("Avg Confidence", f"{classified_df['confidence'].mean():.3f}")
+            
+            # Category breakdown
+            st.subheader("📊 Quick Summary")
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                st.markdown("**Top 5 Categories**")
+                top_cats = classified_df['category'].value_counts().head(5)
+                for cat, count in top_cats.items():
+                    pct = (count / len(classified_df)) * 100
+                    st.write(f"• {cat}: {count:,} ({pct:.1f}%)")
+            
+            with col2:
+                st.markdown("**Classification Quality**")
+                high_conf = (classified_df['confidence'] >= 0.7).sum()
+                med_conf = ((classified_df['confidence'] >= 0.5) & (classified_df['confidence'] < 0.7)).sum()
+                low_conf = (classified_df['confidence'] < 0.5).sum()
+                st.write(f"• High confidence (≥0.7): {high_conf:,}")
+                st.write(f"• Medium confidence (0.5-0.7): {med_conf:,}")
+                st.write(f"• Low confidence (<0.5): {low_conf:,}")
             
             # Show PII stats
             if enable_pii:
                 with st.expander("🔒 PII Redaction Statistics"):
                     stats = redactor.get_stats()
                     total_pii = sum(stats.values())
-                    st.metric("Total PII Redacted", total_pii)
-                    
-                    for pii_type, count in stats.items():
-                        if count > 0:
-                            st.write(f"- {pii_type}: {count}")
+                    if total_pii > 0:
+                        st.metric("Total PII Redacted", total_pii)
+                        for pii_type, count in stats.items():
+                            if count > 0:
+                                st.write(f"• {pii_type}: {count:,}")
+                    else:
+                        st.info("No PII detected in transcripts")
             
             # Preview results
-            with st.expander("👀 Classification Results Preview"):
-                preview_cols = ['transcript_id', 'category', 'subcategory', 'confidence', 'resolve_reason']
+            with st.expander("👀 Classification Results Preview (First 50 rows)"):
+                preview_cols = ['transcript_id', 'category', 'subcategory', 'confidence', 'matched_keywords']
                 if agent_col:
                     preview_cols.insert(1, agent_col)
                 
+                available_cols = [col for col in preview_cols if col in classified_df.columns]
+                
                 st.dataframe(
-                    classified_df[preview_cols].head(20),
-                    use_container_width=True
+                    classified_df[available_cols].head(50),
+                    use_container_width=True,
+                    hide_index=True
                 )
 
 # ===========================
