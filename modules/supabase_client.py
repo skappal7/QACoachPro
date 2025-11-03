@@ -8,6 +8,7 @@ import json
 from datetime import datetime, timedelta
 from typing import Optional, Dict, List, Any
 import streamlit as st
+import pandas as pd
 from supabase import create_client, Client
 
 
@@ -253,6 +254,127 @@ class SupabaseManager:
         except Exception as e:
             st.warning(f"Cache cleanup failed: {str(e)}")
             return {"classifications": 0, "coaching": 0}
+    
+    # ==========================================
+    # Category Hierarchy Methods
+    # ==========================================
+    
+    def upload_hierarchy(self, hierarchy_df) -> bool:
+        """
+        Upload category hierarchy to Supabase
+        Args:
+            hierarchy_df: DataFrame with category, subcategory, tertiary_category
+        Returns:
+            Success status
+        """
+        try:
+            # Clear existing hierarchy for this user
+            self.client.table("category_hierarchy").delete().eq("user_id", self.user_id).execute()
+            
+            # Insert new hierarchy
+            records = []
+            for _, row in hierarchy_df.iterrows():
+                records.append({
+                    "user_id": self.user_id,
+                    "category": str(row['category']).strip(),
+                    "subcategory": str(row.get('subcategory', '')).strip() if pd.notna(row.get('subcategory')) else None,
+                    "tertiary_category": str(row.get('tertiary_category', '')).strip() if pd.notna(row.get('tertiary_category')) else None
+                })
+            
+            if records:
+                self.client.table("category_hierarchy").insert(records).execute()
+            
+            return True
+        except Exception as e:
+            st.error(f"Failed to upload hierarchy: {str(e)}")
+            return False
+    
+    def get_hierarchy(self):
+        """
+        Retrieve user's category hierarchy
+        Returns:
+            DataFrame or None
+        """
+        try:
+            result = self.client.table("category_hierarchy").select(
+                "category, subcategory, tertiary_category"
+            ).eq("user_id", self.user_id).execute()
+            
+            if result.data:
+                import pandas as pd
+                return pd.DataFrame(result.data)
+            return None
+        except:
+            return None
+    
+    # ==========================================
+    # User Examples Methods
+    # ==========================================
+    
+    def upload_user_examples(self, examples_df) -> bool:
+        """
+        Upload user examples to Supabase
+        Args:
+            examples_df: DataFrame with example_phrase, category, subcategory, tertiary_category
+        Returns:
+            Success status
+        """
+        try:
+            records = []
+            for _, row in examples_df.iterrows():
+                records.append({
+                    "user_id": self.user_id,
+                    "example_phrase": str(row['example_phrase']).strip(),
+                    "category": str(row['category']).strip(),
+                    "subcategory": str(row.get('subcategory', '')).strip() if pd.notna(row.get('subcategory')) else None,
+                    "tertiary_category": str(row.get('tertiary_category', '')).strip() if pd.notna(row.get('tertiary_category')) else None,
+                    "confidence": float(row.get('confidence', 0.95)),
+                    "source": str(row.get('source', 'manual'))
+                })
+            
+            if records:
+                self.client.table("user_examples").insert(records).execute()
+            
+            return True
+        except Exception as e:
+            st.error(f"Failed to upload examples: {str(e)}")
+            return False
+    
+    def get_user_examples(self):
+        """
+        Retrieve user's examples
+        Returns:
+            DataFrame or None
+        """
+        try:
+            result = self.client.table("user_examples").select(
+                "example_phrase, category, subcategory, tertiary_category, confidence, source"
+            ).eq("user_id", self.user_id).execute()
+            
+            if result.data:
+                import pandas as pd
+                return pd.DataFrame(result.data)
+            return None
+        except:
+            return None
+    
+    def delete_user_example(self, example_phrase: str) -> bool:
+        """Delete a specific user example"""
+        try:
+            self.client.table("user_examples").delete().eq(
+                "user_id", self.user_id
+            ).eq("example_phrase", example_phrase).execute()
+            return True
+        except:
+            return False
+    
+    def clear_all_user_examples(self) -> bool:
+        """Clear all user examples"""
+        try:
+            self.client.table("user_examples").delete().eq("user_id", self.user_id).execute()
+            return True
+        except:
+            return False
 
 
 def init_supabase() -> SupabaseManager:
