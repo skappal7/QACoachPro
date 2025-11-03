@@ -254,7 +254,7 @@ with tabs[1]:
                     batch_df['redacted_transcript'] = batch_df[transcript_col]
                     transcripts_to_classify = batch_df[transcript_col].tolist()
                 
-                # Classification
+                # Classification (NO CACHE CHECKING IN LOOP)
                 classifications = engine.classify_batch(transcripts_to_classify)
                 
                 # Add results to dataframe
@@ -271,25 +271,29 @@ with tabs[1]:
                 
                 # Update progress
                 progress_bar.progress(batch_end / total_rows)
-                
-                # Cache classifications in Supabase
-                if supabase:
-                    for j, cls in enumerate(classifications):
-                        trans_hash = supabase.hash_text(transcripts_to_classify[j])
-                        supabase.cache_classification(
-                            trans_hash,
-                            cls['category'],
-                            cls['subcategory'],
-                            cls['confidence'],
-                            cls['matched_keywords'],
-                            cls['resolve_reason']
-                        )
             
             # Combine results
             classified_df = pd.concat(results, ignore_index=True)
             
             # Calculate processing time
             processing_time = time.time() - start_time
+            
+            # BATCH cache write AFTER classification completes
+            if supabase:
+                status_text.text("Caching results...")
+                for idx, row in classified_df.iterrows():
+                    try:
+                        trans_hash = supabase.hash_text(row['redacted_transcript'])
+                        supabase.cache_classification(
+                            trans_hash,
+                            row['category'],
+                            row['subcategory'],
+                            row['confidence'],
+                            row['matched_keywords'],
+                            row['resolve_reason']
+                        )
+                    except:
+                        pass  # Ignore cache errors
             
             status_text.text("✅ Classification complete!")
             progress_bar.progress(1.0)
