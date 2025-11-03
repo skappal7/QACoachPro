@@ -92,10 +92,11 @@ class SupabaseManager:
     ) -> bool:
         """
         Cache classification result (7-day TTL)
+        Uses upsert to avoid duplicate key errors
         Returns: Success status
         """
         try:
-            self.client.table("classification_cache").upsert({
+            data = {
                 "user_id": self.user_id,
                 "transcript_hash": transcript_hash,
                 "category": category,
@@ -105,10 +106,25 @@ class SupabaseManager:
                 "resolve_reason": resolve_reason,
                 "created_at": datetime.now().isoformat(),
                 "expires_at": (datetime.now() + timedelta(days=7)).isoformat()
-            }).execute()
+            }
+            
+            # Check if exists first
+            existing = self.client.table("classification_cache").select("id").eq(
+                "user_id", self.user_id
+            ).eq("transcript_hash", transcript_hash).execute()
+            
+            if existing.data:
+                # Update existing
+                self.client.table("classification_cache").update(data).eq(
+                    "user_id", self.user_id
+                ).eq("transcript_hash", transcript_hash).execute()
+            else:
+                # Insert new
+                self.client.table("classification_cache").insert(data).execute()
+            
             return True
         except Exception as e:
-            st.warning(f"Cache write failed: {str(e)}")
+            # Silently fail - caching is not critical
             return False
     
     def get_cached_classification(self, transcript_hash: str) -> Optional[Dict]:
@@ -136,10 +152,11 @@ class SupabaseManager:
     ) -> bool:
         """
         Cache coaching result (7-day TTL)
+        Uses upsert to avoid duplicate key errors
         Returns: Success status
         """
         try:
-            self.client.table("coaching_cache").upsert({
+            data = {
                 "user_id": self.user_id,
                 "agent_name": agent_name,
                 "prompt_hash": prompt_hash,
@@ -147,10 +164,25 @@ class SupabaseManager:
                 "model_used": model_used,
                 "created_at": datetime.now().isoformat(),
                 "expires_at": (datetime.now() + timedelta(days=7)).isoformat()
-            }).execute()
+            }
+            
+            # Check if exists first
+            existing = self.client.table("coaching_cache").select("id").eq(
+                "user_id", self.user_id
+            ).eq("agent_name", agent_name).eq("prompt_hash", prompt_hash).execute()
+            
+            if existing.data:
+                # Update existing
+                self.client.table("coaching_cache").update(data).eq(
+                    "user_id", self.user_id
+                ).eq("agent_name", agent_name).eq("prompt_hash", prompt_hash).execute()
+            else:
+                # Insert new
+                self.client.table("coaching_cache").insert(data).execute()
+            
             return True
         except Exception as e:
-            st.warning(f"Cache write failed: {str(e)}")
+            # Silently fail - caching is not critical
             return False
     
     def get_cached_coaching(self, agent_name: str, prompt_hash: str) -> Optional[Dict]:
