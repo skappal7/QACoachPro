@@ -10,15 +10,17 @@ import pandas as pd
 
 
 class CCREEngine:
-    """Optimized Context Clustered Rule Engine"""
+    """Optimized Context Clustered Rule Engine with hierarchy validation"""
     
-    def __init__(self, rules_df: pd.DataFrame):
+    def __init__(self, rules_df: pd.DataFrame, hierarchy=None):
         """
         Initialize CCRE engine with rules
         Args:
             rules_df: DataFrame with columns: rule_id, category, subcategory, required_groups, forbidden_terms
+            hierarchy: Optional CategoryHierarchy object for validation
         """
         self.rules = rules_df.copy()
+        self.hierarchy = hierarchy
         self._parse_and_optimize_rules()
         
         # Pre-compile negation pattern
@@ -173,7 +175,7 @@ class CCREEngine:
     
     def classify(self, transcript: str) -> Dict:
         """
-        Complete classification pipeline - optimized single pass
+        Complete classification pipeline - optimized single pass with hierarchy validation
         Args:
             transcript: Raw transcript text
         Returns:
@@ -186,6 +188,7 @@ class CCREEngine:
             return {
                 "category": "Unclassified",
                 "subcategory": "Empty Transcript",
+                "tertiary_category": None,
                 "confidence": 0.0,
                 "resolve_reason": "Empty or invalid input",
                 "matched_keywords": "",
@@ -205,6 +208,7 @@ class CCREEngine:
             return {
                 "category": "Unclassified",
                 "subcategory": "No Match",
+                "tertiary_category": None,
                 "confidence": 0.0,
                 "resolve_reason": "No rules activated (threshold: 0.4)",
                 "matched_keywords": "",
@@ -214,14 +218,34 @@ class CCREEngine:
         # Sort by confidence descending
         activated_rules.sort(key=lambda x: x['confidence'], reverse=True)
         
-        # Use highest confidence rule - NO OVERRIDES
+        # Use highest confidence rule
         best_rule = activated_rules[0]
         
+        category = best_rule['category']
+        subcategory = best_rule['subcategory']
+        tertiary = best_rule.get('tertiary_category')
+        
+        # Validate against hierarchy if available
+        if self.hierarchy:
+            is_valid, error_msg = self.hierarchy.validate(category, subcategory, tertiary)
+            
+            if not is_valid:
+                # Try to find closest valid path
+                category, subcategory, tertiary = self.hierarchy.find_closest_valid(
+                    category, subcategory, tertiary
+                )
+                resolve_reason = f"Hierarchy corrected: {error_msg}"
+            else:
+                resolve_reason = f"Highest confidence rule (matched {best_rule['matched_groups']} groups)"
+        else:
+            resolve_reason = f"Highest confidence rule (matched {best_rule['matched_groups']} groups)"
+        
         return {
-            "category": best_rule['category'],
-            "subcategory": best_rule['subcategory'],
+            "category": category,
+            "subcategory": subcategory,
+            "tertiary_category": tertiary,
             "confidence": best_rule['confidence'],
-            "resolve_reason": f"Highest confidence rule (matched {best_rule['matched_groups']} groups)",
+            "resolve_reason": resolve_reason,
             "matched_keywords": " | ".join(best_rule['matched_keywords']),
             "num_rules_activated": len(activated_rules)
         }
