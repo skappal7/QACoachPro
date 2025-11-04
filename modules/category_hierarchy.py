@@ -1,143 +1,124 @@
 """
 Category Hierarchy Module
-Manages and validates 3-level category hierarchy
+Validates and enriches classifications with 4-level hierarchy (L1-L4)
 """
 
-from typing import Dict, List, Set, Tuple, Optional
 import pandas as pd
+from typing import Dict, Optional
 
 
 class CategoryHierarchy:
-    """Manages 3-level category hierarchy validation"""
+    """Manages 4-level category hierarchy and validation"""
     
     def __init__(self, hierarchy_df: pd.DataFrame):
         """
-        Initialize hierarchy from dataframe
+        Initialize with hierarchy data
         Args:
-            hierarchy_df: DataFrame with columns: category, subcategory, tertiary_category
+            hierarchy_df: DataFrame from category_hierarchy.csv
+                         Columns: Program, CatNo, L1, L2, L3, L4
         """
-        self.df = hierarchy_df.copy()
-        self._build_hierarchy_tree()
+        self.hierarchy = hierarchy_df.copy()
+        self._build_lookup()
     
-    def _build_hierarchy_tree(self):
-        """Build fast lookup structures for validation"""
-        self.hierarchy = {}
+    def _build_lookup(self):
+        """Build fast lookup dictionary: (program, cat_no) -> hierarchy"""
+        self.lookup = {}
         
-        for _, row in self.df.iterrows():
-            cat = str(row['category']).strip()
-            subcat = str(row.get('subcategory', '')).strip() if pd.notna(row.get('subcategory')) else None
-            tertiary = str(row.get('tertiary_category', '')).strip() if pd.notna(row.get('tertiary_category')) else None
-            
-            if cat not in self.hierarchy:
-                self.hierarchy[cat] = {}
-            
-            if subcat:
-                if subcat not in self.hierarchy[cat]:
-                    self.hierarchy[cat][subcat] = set()
-                
-                if tertiary:
-                    self.hierarchy[cat][subcat].add(tertiary)
+        for _, row in self.hierarchy.iterrows():
+            key = (row['Program'], row['CatNo'])
+            self.lookup[key] = {
+                'L1': row['L1'],
+                'L2': row['L2'],
+                'L3': row['L3'],
+                'L4': row['L4']
+            }
         
-        # Build flat lists for quick checks
-        self.valid_categories = set(self.hierarchy.keys())
-        self.valid_pairs = set()
-        self.valid_triples = set()
-        
-        for cat, subcats in self.hierarchy.items():
-            for subcat, tertiaries in subcats.items():
-                self.valid_pairs.add((cat, subcat))
-                for tertiary in tertiaries:
-                    self.valid_triples.add((cat, subcat, tertiary))
+        print(f"✅ Built hierarchy lookup with {len(self.lookup):,} categories")
     
-    def validate(self, category: str, subcategory: Optional[str] = None, 
-                 tertiary_category: Optional[str] = None) -> Tuple[bool, str]:
+    def get_hierarchy(self, cat_no: str, program: str) -> Optional[Dict]:
         """
-        Validate if category path exists in hierarchy
+        Get full hierarchy for a category number
         Args:
-            category: Parent category
-            subcategory: Optional subcategory
-            tertiary_category: Optional tertiary category
+            cat_no: Category number (e.g., "Cat1")
+            program: Program name (e.g., "Capital One")
         Returns:
-            (is_valid, error_message)
+            Dictionary with L1, L2, L3, L4 or None if not found
         """
-        category = category.strip() if category else ""
-        subcategory = subcategory.strip() if subcategory else None
-        tertiary_category = tertiary_category.strip() if tertiary_category else None
-        
-        # Check category exists
-        if category not in self.valid_categories:
-            return False, f"Invalid category: '{category}'"
-        
-        # If only category provided, it's valid
-        if not subcategory:
-            return True, ""
-        
-        # Check category-subcategory pair
-        if (category, subcategory) not in self.valid_pairs:
-            return False, f"Invalid subcategory '{subcategory}' for category '{category}'"
-        
-        # If no tertiary provided, pair is valid
-        if not tertiary_category:
-            return True, ""
-        
-        # Check full triple
-        if (category, subcategory, tertiary_category) not in self.valid_triples:
-            return False, f"Invalid tertiary '{tertiary_category}' for {category}/{subcategory}"
-        
-        return True, ""
+        return self.lookup.get((program, cat_no))
     
-    def get_subcategories(self, category: str) -> List[str]:
-        """Get all valid subcategories for a category"""
-        if category in self.hierarchy:
-            return list(self.hierarchy[category].keys())
-        return []
-    
-    def get_tertiary_categories(self, category: str, subcategory: str) -> List[str]:
-        """Get all valid tertiary categories for a category/subcategory pair"""
-        if category in self.hierarchy and subcategory in self.hierarchy[category]:
-            return list(self.hierarchy[category][subcategory])
-        return []
-    
-    def get_all_categories(self) -> List[str]:
-        """Get all valid parent categories"""
-        return list(self.valid_categories)
-    
-    def find_closest_valid(self, category: str, subcategory: Optional[str] = None,
-                          tertiary_category: Optional[str] = None) -> Tuple[str, Optional[str], Optional[str]]:
+    def validate_and_enrich(self, classification: Dict, program: str) -> Dict:
         """
-        Find closest valid category path
+        Validate classification and enrich with full hierarchy
         Args:
-            category, subcategory, tertiary_category
+            classification: Result from proximity/examples/keyword engine
+                          Must have 'cat_no' field
+            program: Program name
         Returns:
-            (valid_category, valid_subcategory, valid_tertiary)
+            Enriched classification with hierarchy or unclassified result
         """
-        # Try exact match first
-        is_valid, _ = self.validate(category, subcategory, tertiary_category)
-        if is_valid:
-            return category, subcategory, tertiary_category
+        if not classification or 'cat_no' not in classification:
+            return self._unclassified_result("No classification provided")
         
-        # Try category + subcategory
-        if subcategory:
-            is_valid, _ = self.validate(category, subcategory)
-            if is_valid:
-                return category, subcategory, None
+        cat_no = classification['cat_no']
+        hierarchy = self.get_hierarchy(cat_no, program)
         
-        # Try just category
-        if category in self.valid_categories:
-            return category, None, None
+        if not hierarchy:
+            return self._unclassified_result(f"Category {cat_no} not found in hierarchy")
         
-        # Return unclassified
-        return "Unclassified", "Invalid Hierarchy", None
-    
-    def get_hierarchy_stats(self) -> Dict:
-        """Get hierarchy statistics"""
-        total_categories = len(self.valid_categories)
-        total_subcategories = len(self.valid_pairs)
-        total_tertiary = len(self.valid_triples)
-        
+        # Enrich with full hierarchy
         return {
-            "total_categories": total_categories,
-            "total_subcategories": total_subcategories,
-            "total_tertiary": total_tertiary,
-            "total_paths": total_tertiary if total_tertiary > 0 else total_subcategories
+            'category': hierarchy['L1'],
+            'subcategory': hierarchy['L2'],
+            'tertiary': hierarchy['L3'],
+            'quaternary': hierarchy['L4'],
+            'cat_no': cat_no,
+            'confidence': classification.get('confidence', 0.0),
+            'matched_keywords': classification.get('matched_terms', ''),
+            'source': classification.get('source', 'unknown'),
+            'program': program
         }
+    
+    def _unclassified_result(self, reason: str = "") -> Dict:
+        """Return standard unclassified result"""
+        return {
+            'category': 'Unclassified',
+            'subcategory': 'No Match',
+            'tertiary': '',
+            'quaternary': '',
+            'cat_no': 'UNCLASS',
+            'confidence': 0.0,
+            'matched_keywords': '',
+            'source': 'none',
+            'program': '',
+            'reason': reason
+        }
+    
+    def get_categories_for_program(self, program: str) -> pd.DataFrame:
+        """Get all categories for a specific program"""
+        return self.hierarchy[self.hierarchy['Program'] == program].copy()
+    
+    def get_all_programs(self) -> list:
+        """Get list of all available programs"""
+        return sorted(self.hierarchy['Program'].unique().tolist())
+    
+    def get_stats(self, program: Optional[str] = None) -> Dict:
+        """Get hierarchy statistics"""
+        if program:
+            df = self.hierarchy[self.hierarchy['Program'] == program]
+            return {
+                'program': program,
+                'total_categories': len(df),
+                'unique_l1': df['L1'].nunique(),
+                'unique_l2': df['L2'].nunique(),
+                'unique_l3': df['L3'].nunique(),
+                'unique_l4': df['L4'].nunique()
+            }
+        else:
+            return {
+                'total_programs': self.hierarchy['Program'].nunique(),
+                'total_categories': len(self.hierarchy),
+                'unique_l1': self.hierarchy['L1'].nunique(),
+                'unique_l2': self.hierarchy['L2'].nunique(),
+                'unique_l3': self.hierarchy['L3'].nunique(),
+                'unique_l4': self.hierarchy['L4'].nunique()
+            }
