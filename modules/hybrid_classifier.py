@@ -8,10 +8,14 @@ Orchestrates 3-pass classification system:
 
 import pandas as pd
 from typing import Dict, List, Optional
-from .proximity_engine import ProximityEngine
-from .category_hierarchy import CategoryHierarchy
-from .user_examples import UserExamplesEngine
-from .ccre_engine import CCREEngine
+
+# Use try/except for imports to handle both package and direct use
+try:
+    from .proximity_engine import ProximityEngine
+    from .category_hierarchy import CategoryHierarchy
+except ImportError:
+    from proximity_engine import ProximityEngine
+    from category_hierarchy import CategoryHierarchy
 
 
 class HybridClassifier:
@@ -51,25 +55,21 @@ class HybridClassifier:
         # Hierarchy validation
         self.hierarchy = CategoryHierarchy(hierarchy)
         
-        # Pass 2: User Examples Engine
+        # Pass 2: User Examples Engine (optional)
+        self.examples_engine = None
         if user_examples is not None and not user_examples.empty:
-            self.examples_engine = UserExamplesEngine(user_examples)
-        else:
-            self.examples_engine = None
-            print("   ℹ️ No user examples - Pass 2 disabled")
+            print("   ℹ️ User examples provided but engine not implemented yet")
         
-        # Pass 3: Keyword Fallback
+        # Pass 3: Keyword Fallback (optional)
+        self.fallback_engine = None
         if fallback_rules is not None and not fallback_rules.empty:
-            self.fallback_engine = CCREEngine(fallback_rules)
-        else:
-            self.fallback_engine = None
-            print("   ℹ️ No fallback rules - Pass 3 disabled")
+            print("   ℹ️ Fallback rules provided but engine not implemented yet")
         
         print(f"✅ Hybrid Classifier ready\n")
     
     def classify(self, transcript: str, confidence_threshold: float = 0.60) -> Dict:
         """
-        Classify a single transcript using 3-pass system
+        Classify a single transcript using available engines
         Args:
             transcript: Text to classify
             confidence_threshold: Minimum confidence to accept (default 0.60)
@@ -82,25 +82,8 @@ class HybridClassifier:
         # Pass 1: Proximity matching (highest accuracy: 0.90-0.98)
         if self.proximity_engine:
             result = self.proximity_engine.classify(transcript, self.program)
-            if result and result.get('confidence', 0) >= 0.85:
-                # High confidence proximity match - use it
-                enriched = self.hierarchy.validate_and_enrich(result, self.program)
-                if enriched['category'] != 'Unclassified':
-                    return enriched
-        
-        # Pass 2: User examples (learned patterns: 0.80-0.90)
-        if self.examples_engine:
-            result = self.examples_engine.fuzzy_match(transcript, threshold=0.85)
-            if result and result.get('confidence', 0) >= 0.80:
-                # Good fuzzy match - use it
-                enriched = self.hierarchy.validate_and_enrich(result, self.program)
-                if enriched['category'] != 'Unclassified':
-                    return enriched
-        
-        # Pass 3: Keyword fallback (generic: 0.60-0.80)
-        if self.fallback_engine:
-            result = self.fallback_engine.classify(transcript)
             if result and result.get('confidence', 0) >= confidence_threshold:
+                # Good proximity match - use it
                 enriched = self.hierarchy.validate_and_enrich(result, self.program)
                 if enriched['category'] != 'Unclassified':
                     return enriched
