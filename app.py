@@ -505,16 +505,15 @@ with tabs[1]:
         if st.session_state.call_id_col:
             display_columns.insert(1 if not st.session_state.agent_col else 2, 'call_id')
         
-        display_df = results_df[display_columns].copy()
+        # Store RAW results in session FIRST (with numeric confidence)
+        st.session_state.classified_results = results_df.copy()
         
-        # Format confidence as percentage
+        # THEN create display version with formatted confidence
+        display_df = results_df[display_columns].copy()
         display_df['confidence'] = display_df['confidence'].apply(lambda x: f"{x:.1%}")
         
         # Show results
         st.dataframe(display_df, use_container_width=True, height=400)
-        
-        # Store in session for other tabs
-        st.session_state.classified_results = results_df
         
         # =============================
         # EXPORT OPTIONS
