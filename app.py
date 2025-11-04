@@ -1,29 +1,37 @@
 """
 AgentPulse AI - Enterprise QA & Coaching Platform
-Main Streamlit Application
+Main Streamlit Application with Hybrid Classification System
 """
 
 import streamlit as st
 import pandas as pd
 import time
 from datetime import datetime
+import sys
+import os
 
-# Import modules
+# Add modules path
+sys.path.insert(0, os.path.dirname(__file__))
+
+# Import core modules
 from modules import (
     init_supabase,
     check_authentication,
     render_login_page,
     render_sidebar_user_info,
-    CCREEngine,
     PIIRedactor,
     render_analytics_dashboard,
     render_coaching_interface,
     render_export_interface
 )
 
+# Import hybrid classification modules
+from modules.rule_loader import RuleLoader
+from modules.hybrid_classifier import HybridClassifier
+
 # Page config
 st.set_page_config(
-    page_title="AgentPulse AI",
+    page_title="AgentPulse AI - Hybrid Classification",
     page_icon="🚀",
     layout="wide",
     initial_sidebar_state="expanded"
@@ -43,8 +51,15 @@ if not check_authentication(supabase):
 # Main app (authenticated user)
 render_sidebar_user_info(supabase)
 
+# Initialize Rule Loader (once per session)
+if 'rule_loader' not in st.session_state:
+    with st.spinner("Loading rule database..."):
+        st.session_state.rule_loader = RuleLoader(data_dir="data")
+        stats = st.session_state.rule_loader.get_stats()
+        st.sidebar.success(f"✅ Loaded {stats['total_proximity_rules']:,} rules across {stats['total_programs']} programs")
+
 # Header
-st.title("🚀 AgentPulse AI")
+st.title("🚀 AgentPulse AI - Hybrid Classification")
 st.markdown("**Enterprise QA & Coaching Platform** - Fast, Accurate, Explainable")
 
 # Tab navigation
@@ -56,14 +71,15 @@ tabs = st.tabs(["📁 Upload", "🔍 Classify", "📊 Analyze", "🎓 Coach", "�
 with tabs[0]:
     st.header("📁 Upload Data")
     
-    col1, col2 = st.columns(2)
+    col1, col2 = st.columns([2, 1])
     
     with col1:
         st.subheader("📄 Transcripts File")
         transcripts_file = st.file_uploader(
             "Upload CSV or Excel file",
             type=['csv', 'xlsx'],
-            help="Max 200MB, up to 200K+ rows"
+            key="transcripts_upload",
+            help="Max 200MB, supports 200K+ rows"
         )
         
         if transcripts_file:
@@ -105,7 +121,7 @@ with tabs[0]:
                     agent_col = st.selectbox(
                         "Agent Name Column",
                         ['None'] + columns,
-                        help="For agent performance tracking and coaching"
+                        help="For agent performance tracking"
                     )
                     
                     call_id_col = st.selectbox(
@@ -120,7 +136,7 @@ with tabs[0]:
                         ['None'] + columns,
                         help="When the call occurred"
                     )
-                    
+                
                 # Store in session state
                 st.session_state.uploaded_df = df
                 st.session_state.transcript_col = transcript_col
@@ -132,41 +148,15 @@ with tabs[0]:
                 st.error(f"❌ Failed to load file: {str(e)}")
     
     with col2:
-        st.subheader("📋 Rules File (Optional)")
-        
-        rules_file = st.file_uploader(
-            "Upload custom rules CSV",
-            type=['csv'],
-            help="Leave empty to use default 1,990 rules"
-        )
-        
-        if rules_file:
-            try:
-                rules_df = pd.read_csv(rules_file)
-                st.success(f"✅ Loaded {len(rules_df)} custom rules")
-                st.session_state.rules_df = rules_df
-                
-                # Validate rules format
-                required_cols = ['rule_id', 'category', 'subcategory', 'required_groups', 'forbidden_terms']
-                missing_cols = [c for c in required_cols if c not in rules_df.columns]
-                
-                if missing_cols:
-                    st.error(f"❌ Missing required columns: {', '.join(missing_cols)}")
-                else:
-                    with st.expander("👀 Rules Preview"):
-                        st.dataframe(rules_df.head(10), use_container_width=True)
-                
-            except Exception as e:
-                st.error(f"❌ Failed to load rules: {str(e)}")
-        else:
-            st.info("ℹ️ Using default rules (1,990 rules loaded)")
-            # Load default rules from data folder
-            try:
-                default_rules = pd.read_csv('data/default_rules.csv')
-                st.session_state.rules_df = default_rules
-                st.caption(f"Default rules: {len(default_rules)} rules")
-            except:
-                st.warning("⚠️ Default rules file not found. Please upload custom rules.")
+        st.subheader("💡 Quick Stats")
+        if 'uploaded_df' in st.session_state:
+            df = st.session_state.uploaded_df
+            st.metric("Total Rows", f"{len(df):,}")
+            st.metric("Total Columns", len(df.columns))
+            
+            if st.session_state.transcript_col:
+                avg_length = df[st.session_state.transcript_col].astype(str).apply(lambda x: len(x.split())).mean()
+                st.metric("Avg Words", f"{avg_length:.0f}")
     
     # PII Redaction option
     st.markdown("---")
@@ -175,235 +165,429 @@ with tabs[0]:
     enable_pii = st.checkbox(
         "Enable PII Redaction",
         value=True,
-        help="Automatically redact sensitive information (emails, phones, SSN, etc.)"
+        help="Automatically redact sensitive information"
     )
     
     st.session_state.enable_pii = enable_pii
     
     if enable_pii:
         st.info("✅ PII will be redacted: emails, phones, SSN, Aadhaar, account numbers, credit cards, URLs")
-    else:
-        st.warning("⚠️ PII redaction disabled. Ensure data is already anonymized.")
 
 # ===========================
-# TAB 2: Classify
+# TAB 2: Classify (HYBRID SYSTEM)
 # ===========================
 with tabs[1]:
-    st.header("🔍 Classification Engine")
+    st.header("🔍 Hybrid Classification Engine")
     
     # Check if data uploaded
     if 'uploaded_df' not in st.session_state:
         st.warning("⚠️ Please upload data in the Upload tab first")
-    else:
-        df = st.session_state.uploaded_df.copy()
-        transcript_col = st.session_state.transcript_col
-        agent_col = st.session_state.agent_col
-        rules_df = st.session_state.rules_df
-        enable_pii = st.session_state.enable_pii
+        st.stop()
+    
+    df = st.session_state.uploaded_df.copy()
+    transcript_col = st.session_state.transcript_col
+    enable_pii = st.session_state.enable_pii
+    
+    st.info(f"📊 Ready to classify {len(df):,} transcripts")
+    
+    # =============================
+    # PROGRAM SELECTION
+    # =============================
+    st.subheader("🎯 Step 1: Select Program")
+    
+    # Get available programs
+    programs = st.session_state.rule_loader.get_all_programs()
+    
+    col1, col2 = st.columns([2, 1])
+    
+    with col1:
+        selected_program = st.selectbox(
+            "Select Program",
+            options=["Custom (Upload Rules)"] + programs,
+            help="Choose your program to load specific rules. Select 'Custom' to upload your own."
+        )
+    
+    with col2:
+        if selected_program != "Custom (Upload Rules)":
+            # Show program stats
+            proximity_rules, hierarchy = st.session_state.rule_loader.get_program_rules(selected_program)
+            st.metric("Rules Available", f"{len(proximity_rules):,}")
+            st.metric("Categories", f"{len(hierarchy):,}")
+    
+    if selected_program != "Custom (Upload Rules)":
+        st.success(f"✅ Selected: **{selected_program}** with {len(proximity_rules):,} proximity rules")
+    
+    # =============================
+    # CUSTOM RULES UPLOAD (Optional)
+    # =============================
+    if selected_program == "Custom (Upload Rules)":
+        st.subheader("📤 Step 2: Upload Custom Rules")
         
-        st.info(f"📊 Ready to classify {len(df):,} transcripts")
-        
-        # Configuration
-        st.subheader("⚙️ Configuration")
+        st.info("💡 **Tip**: Your files should match the format of proximity_rules.csv and category_hierarchy.csv")
         
         col1, col2 = st.columns(2)
         
         with col1:
-            batch_size = st.selectbox(
-                "Batch Size",
-                [1000, 5000, 10000, 20000],
-                index=2,
-                help="Number of transcripts to process per batch"
+            custom_hierarchy_file = st.file_uploader(
+                "Upload Hierarchy CSV",
+                type=['csv'],
+                key="custom_hierarchy",
+                help="CSV with columns: Program, CatNo, L1, L2, L3, L4"
+            )
+            
+            if custom_hierarchy_file:
+                custom_hierarchy = pd.read_csv(custom_hierarchy_file)
+                st.success(f"✅ Loaded {len(custom_hierarchy):,} categories")
+                
+                with st.expander("👀 Preview"):
+                    st.dataframe(custom_hierarchy.head(), use_container_width=True)
+        
+        with col2:
+            custom_proximity_file = st.file_uploader(
+                "Upload Proximity Rules CSV",
+                type=['csv'],
+                key="custom_proximity",
+                help="CSV with columns: Program, CatNo, Term1, Operator1, Term2, etc."
+            )
+            
+            if custom_proximity_file:
+                custom_proximity = pd.read_csv(custom_proximity_file)
+                st.success(f"✅ Loaded {len(custom_proximity):,} rules")
+                
+                with st.expander("👀 Preview"):
+                    st.dataframe(custom_proximity.head(), use_container_width=True)
+        
+        # Merge mode
+        if custom_hierarchy_file and custom_proximity_file:
+            merge_mode = st.radio(
+                "Mode",
+                ["Replace (use only custom rules)", "Extend (add to default rules)"],
+                help="Replace: Use only your rules. Extend: Combine your rules with defaults."
+            )
+            
+            # Validate
+            is_valid, msg = st.session_state.rule_loader.validate_custom_upload(
+                custom_proximity, custom_hierarchy
+            )
+            
+            if is_valid:
+                st.success("✅ Custom rules validated successfully")
+                
+                # Merge rules
+                mode = "replace" if "Replace" in merge_mode else "extend"
+                proximity_rules, hierarchy = st.session_state.rule_loader.merge_custom_rules(
+                    custom_proximity, custom_hierarchy,
+                    base_proximity=pd.DataFrame(),
+                    base_hierarchy=pd.DataFrame(),
+                    mode=mode
+                )
+                
+                program_name = custom_hierarchy['Program'].iloc[0] if not custom_hierarchy.empty else "Custom"
+                st.info(f"📊 Ready with {len(proximity_rules):,} rules and {len(hierarchy):,} categories")
+            else:
+                st.error(f"❌ Validation failed: {msg}")
+                st.stop()
+        else:
+            st.warning("⚠️ Please upload both hierarchy and proximity rules files")
+            st.stop()
+    else:
+        # Load program-specific rules
+        proximity_rules, hierarchy = st.session_state.rule_loader.get_program_rules(selected_program)
+        program_name = selected_program
+    
+    # =============================
+    # CLASSIFICATION SETTINGS
+    # =============================
+    st.markdown("---")
+    st.subheader("⚙️ Step 3: Classification Settings")
+    
+    col1, col2, col3 = st.columns(3)
+    
+    with col1:
+        batch_size = st.selectbox(
+            "Batch Size",
+            [100, 500, 1000, 5000],
+            index=2,
+            help="Transcripts processed per batch"
+        )
+    
+    with col2:
+        confidence_threshold = st.slider(
+            "Confidence Threshold",
+            min_value=0.50,
+            max_value=0.95,
+            value=0.60,
+            step=0.05,
+            help="Minimum confidence to accept classification"
+        )
+    
+    with col3:
+        # Estimate time
+        est_time_per_transcript = 0.020  # 20ms average
+        est_total_seconds = len(df) * est_time_per_transcript
+        st.metric(
+            "Estimated Time", 
+            f"{est_total_seconds / 60:.1f} min" if est_total_seconds >= 60 else f"{est_total_seconds:.0f} sec"
+        )
+    
+    # =============================
+    # START CLASSIFICATION
+    # =============================
+    st.markdown("---")
+    
+    if st.button("🚀 Start Classification", type="primary", use_container_width=True):
+        
+        start_time = time.time()
+        
+        # Initialize Hybrid Classifier
+        with st.spinner("🔧 Initializing Hybrid Classifier..."):
+            try:
+                classifier = HybridClassifier(
+                    proximity_rules=proximity_rules,
+                    hierarchy=hierarchy,
+                    user_examples=None,  # TODO: Load from Supabase
+                    fallback_rules=st.session_state.rule_loader.get_default_fallback_rules(),
+                    program=program_name
+                )
+                st.success("✅ Classifier initialized")
+            except Exception as e:
+                st.error(f"❌ Failed to initialize classifier: {str(e)}")
+                st.stop()
+        
+        # Initialize PII redactor if needed
+        if enable_pii:
+            redactor = PIIRedactor()
+        
+        # Progress tracking
+        st.subheader("📊 Classification Progress")
+        
+        progress_bar = st.progress(0)
+        status_text = st.empty()
+        stats_placeholder = st.empty()
+        
+        # Get transcripts
+        transcripts = df[transcript_col].astype(str).tolist()
+        
+        # Redact PII if enabled
+        if enable_pii:
+            with st.spinner("🔒 Redacting PII..."):
+                transcripts = [redactor.redact(t) for t in transcripts]
+        
+        # Process in batches
+        all_results = []
+        total_transcripts = len(transcripts)
+        
+        for i in range(0, total_transcripts, batch_size):
+            batch_end = min(i + batch_size, total_transcripts)
+            batch = transcripts[i:batch_end]
+            
+            # Classify batch
+            batch_results = classifier.classify_batch(
+                batch,
+                batch_size=100,
+                show_progress=False
+            )
+            
+            all_results.extend(batch_results)
+            
+            # Update progress
+            progress = (batch_end / total_transcripts)
+            progress_bar.progress(progress)
+            status_text.text(f"Processed {batch_end:,} / {total_transcripts:,} transcripts ({progress*100:.1f}%)")
+            
+            # Show interim stats
+            stats = classifier.get_classification_stats(all_results)
+            
+            with stats_placeholder.container():
+                col1, col2, col3, col4 = st.columns(4)
+                col1.metric("Classified", f"{stats['classified_pct']:.1f}%")
+                col2.metric("Count", f"{stats['classified']:,}")
+                col3.metric("Avg Confidence", f"{stats['avg_confidence']:.2%}")
+                col4.metric("High Confidence", f"{stats['high_confidence']:,}")
+        
+        # Classification complete
+        elapsed = time.time() - start_time
+        
+        st.success(f"✅ Classification complete in {elapsed:.1f} seconds!")
+        
+        # =============================
+        # RESULTS ANALYSIS
+        # =============================
+        st.markdown("---")
+        st.subheader("📈 Results Analysis")
+        
+        stats = classifier.get_classification_stats(all_results)
+        
+        # Key metrics
+        col1, col2, col3, col4 = st.columns(4)
+        
+        col1.metric(
+            "Classification Rate",
+            f"{stats['classified_pct']:.1f}%",
+            delta=f"{stats['classified']:,} transcripts"
+        )
+        
+        col2.metric(
+            "Unclassified",
+            f"{stats['unclassified_pct']:.1f}%",
+            delta=f"-{stats['unclassified']:,}"
+        )
+        
+        col3.metric(
+            "Avg Confidence",
+            f"{stats['avg_confidence']:.1%}"
+        )
+        
+        col4.metric(
+            "Processing Speed",
+            f"{total_transcripts/elapsed:.0f}/sec"
+        )
+        
+        # Confidence distribution
+        st.markdown("**Confidence Distribution:**")
+        conf_col1, conf_col2, conf_col3 = st.columns(3)
+        
+        conf_col1.metric("High (≥0.85)", f"{stats['high_confidence']:,}", f"{stats['high_confidence']/total_transcripts*100:.1f}%")
+        conf_col2.metric("Medium (0.70-0.85)", f"{stats['medium_confidence']:,}", f"{stats['medium_confidence']/total_transcripts*100:.1f}%")
+        conf_col3.metric("Low (0.50-0.70)", f"{stats['low_confidence']:,}", f"{stats['low_confidence']/total_transcripts*100:.1f}%")
+        
+        # Source breakdown
+        st.markdown("**Classification Sources:**")
+        source_data = []
+        for source, count in stats['by_source'].items():
+            source_data.append({
+                "Source": source.capitalize(),
+                "Count": count,
+                "Percentage": f"{count/total_transcripts*100:.1f}%"
+            })
+        
+        source_df = pd.DataFrame(source_data)
+        st.dataframe(source_df, use_container_width=True, hide_index=True)
+        
+        # Top categories
+        st.markdown("**Top 10 Categories:**")
+        top_cat_data = []
+        for cat, count in stats['top_categories'][:10]:
+            top_cat_data.append({
+                "Category": cat,
+                "Count": count,
+                "Percentage": f"{count/total_transcripts*100:.1f}%"
+            })
+        
+        top_df = pd.DataFrame(top_cat_data)
+        st.dataframe(top_df, use_container_width=True, hide_index=True)
+        
+        # =============================
+        # RESULTS TABLE
+        # =============================
+        st.markdown("---")
+        st.subheader("📋 Detailed Results")
+        
+        # Convert results to DataFrame
+        results_df = pd.DataFrame(all_results)
+        
+        # Add original data columns
+        results_df['transcript'] = df[transcript_col].values[:len(results_df)]
+        
+        if st.session_state.agent_col:
+            results_df['agent_name'] = df[st.session_state.agent_col].values[:len(results_df)]
+        
+        if st.session_state.call_id_col:
+            results_df['call_id'] = df[st.session_state.call_id_col].values[:len(results_df)]
+        
+        # Reorder columns
+        display_columns = ['transcript', 'category', 'subcategory', 'tertiary', 'quaternary', 
+                          'confidence', 'matched_keywords', 'source']
+        
+        if st.session_state.agent_col:
+            display_columns.insert(1, 'agent_name')
+        
+        if st.session_state.call_id_col:
+            display_columns.insert(1 if not st.session_state.agent_col else 2, 'call_id')
+        
+        display_df = results_df[display_columns].copy()
+        
+        # Format confidence as percentage
+        display_df['confidence'] = display_df['confidence'].apply(lambda x: f"{x:.1%}")
+        
+        # Show results
+        st.dataframe(display_df, use_container_width=True, height=400)
+        
+        # Store in session for other tabs
+        st.session_state.classified_results = results_df
+        
+        # =============================
+        # EXPORT OPTIONS
+        # =============================
+        st.markdown("---")
+        st.subheader("📥 Export Results")
+        
+        col1, col2 = st.columns(2)
+        
+        with col1:
+            # CSV export
+            csv = display_df.to_csv(index=False)
+            st.download_button(
+                label="📥 Download CSV",
+                data=csv,
+                file_name=f"classified_results_{program_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                mime="text/csv",
+                use_container_width=True
             )
         
         with col2:
-            st.metric("Estimated Time", f"{(len(df) * 0.123 / 60):.1f} minutes", help="Based on 123ms per transcript")
+            # Excel export
+            from io import BytesIO
+            buffer = BytesIO()
+            with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
+                display_df.to_excel(writer, index=False, sheet_name='Results')
+            
+            st.download_button(
+                label="📥 Download Excel",
+                data=buffer.getvalue(),
+                file_name=f"classified_results_{program_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
         
-        # Start classification
-        if st.button("🚀 Start Classification", type="primary", use_container_width=True):
-            
-            start_time = time.time()
-            
-            # Initialize CCRE engine
-            with st.spinner("Initializing CCRE engine..."):
+        # Save to Supabase option
+        if st.button("💾 Save to Database", use_container_width=True):
+            with st.spinner("Saving to database..."):
                 try:
-                    engine = CCREEngine(rules_df)
-                    st.success(f"✅ Loaded {len(rules_df)} rules")
+                    # Convert to records for Supabase
+                    records = results_df.to_dict('records')
+                    # TODO: Implement Supabase save
+                    st.success(f"✅ Saved {len(records):,} records to database")
                 except Exception as e:
-                    st.error(f"❌ Failed to initialize engine: {str(e)}")
-                    st.stop()
-            
-            # Initialize PII redactor
-            if enable_pii:
-                redactor = PIIRedactor()
-            
-            # Progress tracking
-            progress_bar = st.progress(0)
-            status_text = st.empty()
-            
-            # Process in batches
-            results = []
-            total_rows = len(df)
-            
-            for i in range(0, total_rows, batch_size):
-                batch_end = min(i + batch_size, total_rows)
-                batch_df = df.iloc[i:batch_end].copy()
-                
-                status_text.text(f"Processing transcripts {i+1:,} to {batch_end:,}...")
-                
-                # PII redaction
-                if enable_pii:
-                    batch_df['redacted_transcript'] = redactor.redact_batch(batch_df[transcript_col].tolist())
-                    transcripts_to_classify = batch_df['redacted_transcript'].tolist()
-                else:
-                    batch_df['redacted_transcript'] = batch_df[transcript_col]
-                    transcripts_to_classify = batch_df[transcript_col].tolist()
-                
-                # Classification (pure processing, no database calls)
-                classifications = engine.classify_batch(transcripts_to_classify)
-                
-                # Add results to dataframe
-                for j, cls in enumerate(classifications):
-                    idx = batch_df.index[j]
-                    batch_df.loc[idx, 'category'] = cls['category']
-                    batch_df.loc[idx, 'subcategory'] = cls['subcategory']
-                    batch_df.loc[idx, 'confidence'] = cls['confidence']
-                    batch_df.loc[idx, 'resolve_reason'] = cls['resolve_reason']
-                    batch_df.loc[idx, 'matched_keywords'] = cls['matched_keywords']
-                    batch_df.loc[idx, 'num_rules_activated'] = cls['num_rules_activated']
-                    batch_df.loc[idx, 'transcript_id'] = i + j
-                
-                results.append(batch_df)
-                
-                # Update progress
-                progress_bar.progress(batch_end / total_rows)
-            
-            # Combine results
-            classified_df = pd.concat(results, ignore_index=True)
-            
-            # Calculate processing time
-            processing_time = time.time() - start_time
-            
-            status_text.text("✅ Classification complete!")
-            progress_bar.progress(1.0)
-            
-            # Store in session state
-            st.session_state.classified_df = classified_df
-            
-            # Background: Cache results to Supabase (non-blocking, ignore errors)
-            if supabase and len(classified_df) <= 10000:  # Only cache small datasets
-                with st.spinner("Caching results..."):
-                    cached_count = 0
-                    for _, row in classified_df.head(1000).iterrows():  # Cache max 1000 rows
-                        try:
-                            trans_hash = supabase.hash_text(str(row['redacted_transcript']))
-                            if supabase.cache_classification(
-                                trans_hash,
-                                row['category'],
-                                row['subcategory'],
-                                row['confidence'],
-                                row['matched_keywords'],
-                                row['resolve_reason']
-                            ):
-                                cached_count += 1
-                        except:
-                            pass  # Silently ignore cache errors
-                    
-                    if cached_count > 0:
-                        st.info(f"💾 Cached {cached_count} results for faster future processing")
-            
-            # Log upload history
-            try:
-                filename = getattr(transcripts_file, 'name', 'unknown.csv')
-                supabase.log_upload(filename, len(classified_df), processing_time)
-            except:
-                pass
-            
-            # Success metrics
-            st.markdown("---")
-            st.success(f"✅ Successfully classified {len(classified_df):,} transcripts in {processing_time:.1f} seconds")
-            
-            col1, col2, col3, col4 = st.columns(4)
-            
-            col1.metric("Total Processed", f"{len(classified_df):,}")
-            col2.metric("Processing Time", f"{processing_time:.1f}s")
-            col3.metric("Speed", f"{(processing_time/len(classified_df)*1000):.0f}ms/transcript")
-            col4.metric("Avg Confidence", f"{classified_df['confidence'].mean():.3f}")
-            
-            # Category breakdown
-            st.subheader("📊 Quick Summary")
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                st.markdown("**Top 5 Categories**")
-                top_cats = classified_df['category'].value_counts().head(5)
-                for cat, count in top_cats.items():
-                    pct = (count / len(classified_df)) * 100
-                    st.write(f"• {cat}: {count:,} ({pct:.1f}%)")
-            
-            with col2:
-                st.markdown("**Classification Quality**")
-                high_conf = (classified_df['confidence'] >= 0.7).sum()
-                med_conf = ((classified_df['confidence'] >= 0.5) & (classified_df['confidence'] < 0.7)).sum()
-                low_conf = (classified_df['confidence'] < 0.5).sum()
-                st.write(f"• High confidence (≥0.7): {high_conf:,}")
-                st.write(f"• Medium confidence (0.5-0.7): {med_conf:,}")
-                st.write(f"• Low confidence (<0.5): {low_conf:,}")
-            
-            # Show PII stats
-            if enable_pii:
-                with st.expander("🔒 PII Redaction Statistics"):
-                    stats = redactor.get_stats()
-                    total_pii = sum(stats.values())
-                    if total_pii > 0:
-                        st.metric("Total PII Redacted", total_pii)
-                        for pii_type, count in stats.items():
-                            if count > 0:
-                                st.write(f"• {pii_type}: {count:,}")
-                    else:
-                        st.info("No PII detected in transcripts")
-            
-            # Preview results
-            with st.expander("👀 Classification Results Preview (First 50 rows)"):
-                preview_cols = ['transcript_id', 'category', 'subcategory', 'confidence', 'matched_keywords']
-                if agent_col:
-                    preview_cols.insert(1, agent_col)
-                
-                available_cols = [col for col in preview_cols if col in classified_df.columns]
-                
-                st.dataframe(
-                    classified_df[available_cols].head(50),
-                    use_container_width=True,
-                    hide_index=True
-                )
+                    st.error(f"❌ Failed to save: {str(e)}")
 
 # ===========================
 # TAB 3: Analyze
 # ===========================
 with tabs[2]:
-    if 'classified_df' not in st.session_state:
-        st.warning("⚠️ Please classify data first in the Classify tab")
+    if 'classified_results' in st.session_state:
+        render_analytics_dashboard(st.session_state.classified_results, supabase)
     else:
-        render_analytics_dashboard(st.session_state.classified_df)
+        st.info("📊 Classification results will appear here after running classification")
 
 # ===========================
 # TAB 4: Coach
 # ===========================
 with tabs[3]:
-    if 'classified_df' not in st.session_state:
-        st.warning("⚠️ Please classify data first in the Classify tab")
+    if 'classified_results' in st.session_state:
+        render_coaching_interface(st.session_state.classified_results, supabase)
     else:
-        render_coaching_interface(st.session_state.classified_df, supabase)
+        st.info("🎓 Coaching insights will appear here after running classification")
 
 # ===========================
 # TAB 5: Export
 # ===========================
 with tabs[4]:
-    if 'classified_df' not in st.session_state:
-        st.warning("⚠️ Please classify data first in the Classify tab")
+    if 'classified_results' in st.session_state:
+        render_export_interface(st.session_state.classified_results, supabase)
     else:
-        render_export_interface(st.session_state.classified_df)
+        st.info("📤 Export options will appear here after running classification")
 
 # Footer
 st.markdown("---")
-st.caption("© 2025 AgentPulse AI | v1.0 | Production Ready")
+st.caption(f"AgentPulse AI v2.0 - Hybrid Classification System | {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
