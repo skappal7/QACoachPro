@@ -566,7 +566,16 @@ with tabs[1]:
 # ===========================
 with tabs[2]:
     if 'classified_results' in st.session_state:
-        render_analytics_dashboard(st.session_state.classified_results, supabase)
+        try:
+            render_analytics_dashboard(st.session_state.classified_results, supabase)
+        except Exception as e:
+            st.error(f"Analytics error: {str(e)}")
+            st.info("Showing basic stats instead:")
+            df = st.session_state.classified_results
+            col1, col2, col3 = st.columns(3)
+            col1.metric("Total", len(df))
+            col2.metric("Classified", sum(df['category'] != 'Unclassified'))
+            col3.metric("Avg Confidence", f"{df['confidence'].mean():.1%}")
     else:
         st.info("📊 Classification results will appear here after running classification")
 
