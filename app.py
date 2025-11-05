@@ -386,6 +386,18 @@ with tabs[1]:
         # Get transcripts
         transcripts = df[transcript_col].astype(str).tolist()
         
+        # Clean transcripts - remove timestamps and formatting labels
+        def clean_transcript(text):
+            import re
+            # Remove [HH:MM:SS AGENT]: and [HH:MM:SS CUSTOMER]: patterns
+            text = re.sub(r'\[\d{2}:\d{2}:\d{2}\s+(AGENT|CUSTOMER)\]:\s*', ' ', text)
+            # Remove extra whitespace
+            text = ' '.join(text.split())
+            return text.lower()
+        
+        st.info("🧹 Cleaning transcripts (removing timestamps and labels)...")
+        transcripts = [clean_transcript(t) for t in transcripts]
+        
         # Redact PII if enabled
         if enable_pii:
             with st.spinner("🔒 Redacting PII..."):
@@ -405,14 +417,7 @@ with tabs[1]:
                 batch_size=100,
                 show_progress=False
             )
-            # DEBUG - First batch only
-            if i == 0:
-                st.write("🔍 DEBUG - First 3 results:")
-                for idx, result in enumerate(batch_results[:3]):
-                    st.json(result)
-                st.write("🔍 DEBUG - First transcript:")
-                st.text(batch[0][:300])
-                
+            
             all_results.extend(batch_results)
             
             # Update progress
