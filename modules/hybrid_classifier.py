@@ -1,9 +1,6 @@
 """
-Hybrid Classifier
-Orchestrates 3-pass classification system:
-1. Proximity Engine (highest accuracy)
-2. User Examples (learned patterns)
-3. Keyword Fallback (safety net)
+Hybrid Classifier - Simplified Version
+Uses CCRE engine only (no proximity engine)
 """
 
 import pandas as pd
@@ -11,16 +8,16 @@ from typing import Dict, List, Optional
 
 # Use try/except for imports to handle both package and direct use
 try:
-    from .proximity_engine import ProximityEngine
     from .category_hierarchy import CategoryHierarchy
+    from .ccre_engine import CCREEngine
 except ImportError:
-    from proximity_engine import ProximityEngine
     from category_hierarchy import CategoryHierarchy
+    from ccre_engine import CCREEngine
 
 
 class HybridClassifier:
     """
-    3-pass hybrid classification system with hierarchy validation
+    Simplified classifier using CCRE engine only
     """
     
     def __init__(
@@ -32,63 +29,58 @@ class HybridClassifier:
         program: str = "Generic"
     ):
         """
-        Initialize hybrid classifier
+        Initialize classifier with CCRE engine
         Args:
-            proximity_rules: Proximity rules DataFrame
+            proximity_rules: Not used (kept for compatibility)
             hierarchy: Category hierarchy DataFrame
-            user_examples: Optional user examples for fuzzy matching
-            fallback_rules: Optional fallback keyword rules
-            program: Program name for filtering
+            user_examples: Not used (kept for compatibility)
+            fallback_rules: CCRE rules DataFrame
+            program: Program name
         """
         self.program = program
         
-        # Initialize engines
-        print(f"\n🔧 Initializing Hybrid Classifier for {program}...")
-        
-        # Pass 1: Proximity Engine
-        if not proximity_rules.empty:
-            self.proximity_engine = ProximityEngine(proximity_rules)
-        else:
-            self.proximity_engine = None
-            print("   ⚠️ No proximity rules - Pass 1 disabled")
+        print(f"\n🔧 Initializing Classifier for {program}...")
         
         # Hierarchy validation
         self.hierarchy = CategoryHierarchy(hierarchy)
         
-        # Pass 2: User Examples Engine (optional)
-        self.examples_engine = None
-        if user_examples is not None and not user_examples.empty:
-            print("   ℹ️ User examples provided but engine not implemented yet")
-        
-        # Pass 3: Keyword Fallback (optional)
-        self.fallback_engine = None
+        # CCRE Engine (main engine)
         if fallback_rules is not None and not fallback_rules.empty:
-            print("   ℹ️ Fallback rules provided but engine not implemented yet")
+            self.ccre_engine = CCREEngine(fallback_rules)
+            print(f"   ✅ Loaded {len(fallback_rules)} CCRE rules")
+        else:
+            self.ccre_engine = None
+            print("   ⚠️ No CCRE rules provided")
         
-        print(f"✅ Hybrid Classifier ready\n")
+        print(f"✅ Classifier ready\n")
     
-    def classify(self, transcript: str, confidence_threshold: float = 0.60) -> Dict:
+    def classify(self, transcript: str, confidence_threshold: float = 0.40) -> Dict:
         """
-        Classify a single transcript using available engines
+        Classify a single transcript using CCRE engine
         Args:
             transcript: Text to classify
-            confidence_threshold: Minimum confidence to accept (default 0.60)
+            confidence_threshold: Minimum confidence (default 0.40 for better coverage)
         Returns:
             Classification result with full hierarchy
         """
         if not transcript or not isinstance(transcript, str):
             return self.hierarchy._unclassified_result("Empty transcript")
         
-        # Pass 1: Proximity matching (highest accuracy: 0.90-0.98)
-        if self.proximity_engine:
-            result = self.proximity_engine.classify(transcript, self.program)
+        # Use CCRE engine
+        if self.ccre_engine:
+            result = self.ccre_engine.classify(transcript)
             if result and result.get('confidence', 0) >= confidence_threshold:
-                # Good proximity match - use it
-                enriched = self.hierarchy.validate_and_enrich(result, self.program)
+                # Build result in correct format
+                formatted_result = {
+                    'cat_no': result.get('rule_id', 'UNKNOWN'),
+                    'confidence': result.get('confidence', 0),
+                    'matched_terms': result.get('matched_keywords', ''),
+                    'source': 'ccre'
+                }
+                enriched = self.hierarchy.validate_and_enrich(formatted_result, self.program)
                 if enriched['category'] != 'Unclassified':
                     return enriched
         
-        # No match in any pass
         return self.hierarchy._unclassified_result("No rules matched above threshold")
     
     def classify_batch(
@@ -101,24 +93,12 @@ class HybridClassifier:
         Classify multiple transcripts in batches
         Args:
             transcripts: List of transcripts to classify
-            batch_size: Process in batches for memory efficiency
-            show_progress: Print progress updates
+            batch_size: Not used, kept for compatibility
+            show_progress: Not used, kept for compatibility
         Returns:
             List of classification results
         """
-        results = []
-        total = len(transcripts)
-        
-        for i in range(0, total, batch_size):
-            batch = transcripts[i:i+batch_size]
-            batch_results = [self.classify(t) for t in batch]
-            results.extend(batch_results)
-            
-            if show_progress:
-                processed = min(i + batch_size, total)
-                pct = (processed / total) * 100
-                print(f"   Processed {processed:,}/{total:,} ({pct:.1f}%)")
-        
+        results = [self.classify(t) for t in transcripts]
         return results
     
     def get_classification_stats(self, results: List[Dict]) -> Dict:
@@ -147,9 +127,9 @@ class HybridClassifier:
         confidences = [r.get('confidence', 0) for r in results]
         avg_confidence = sum(confidences) / len(confidences) if confidences else 0
         
-        high_conf = sum(1 for c in confidences if c >= 0.85)
-        med_conf = sum(1 for c in confidences if 0.70 <= c < 0.85)
-        low_conf = sum(1 for c in confidences if 0.50 <= c < 0.70)
+        high_conf = sum(1 for c in confidences if c >= 0.70)
+        med_conf = sum(1 for c in confidences if 0.50 <= c < 0.70)
+        low_conf = sum(1 for c in confidences if 0.40 <= c < 0.50)
         
         # Top categories
         category_counts = {}
@@ -172,34 +152,3 @@ class HybridClassifier:
             'by_source': source_counts,
             'top_categories': top_categories
         }
-    
-    def explain_classification(self, result: Dict) -> str:
-        """
-        Generate human-readable explanation of classification
-        Args:
-            result: Classification result dictionary
-        Returns:
-            Explanation string
-        """
-        if result['category'] == 'Unclassified':
-            reason = result.get('reason', 'No matching rules found')
-            return f"❌ Unclassified: {reason}"
-        
-        source = result.get('source', 'unknown')
-        confidence = result.get('confidence', 0)
-        matched = result.get('matched_keywords', '')
-        
-        explanation = f"✅ Classified as: {result['category']} > {result['subcategory']}"
-        
-        if result.get('tertiary'):
-            explanation += f" > {result['tertiary']}"
-        if result.get('quaternary'):
-            explanation += f" > {result['quaternary']}"
-        
-        explanation += f"\n   Source: {source}"
-        explanation += f"\n   Confidence: {confidence:.2%}"
-        
-        if matched:
-            explanation += f"\n   Matched: {matched[:100]}"
-        
-        return explanation
