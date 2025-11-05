@@ -397,6 +397,12 @@ with tabs[1]:
         
         st.info("🧹 Cleaning transcripts (removing timestamps and labels)...")
         transcripts = [clean_transcript(t) for t in transcripts]
+        transcripts = [clean_transcript(t) for t in transcripts]
+
+        # DEBUG - Show cleaned transcript
+        st.write("🔍 CLEANED transcript (first 300 chars):")
+        st.text(transcripts[0][:300])
+        
         
         # Redact PII if enabled
         if enable_pii:
