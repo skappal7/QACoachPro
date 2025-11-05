@@ -524,8 +524,8 @@ with tabs[1]:
         col1, col2 = st.columns(2)
         
         with col1:
-            # CSV export
-            csv = display_df.to_csv(index=False)
+            # CSV export - use RAW data not formatted display
+            csv = results_df[display_columns].to_csv(index=False)
             st.download_button(
                 label="📥 Download CSV",
                 data=csv,
@@ -535,11 +535,11 @@ with tabs[1]:
             )
         
         with col2:
-            # Excel export
+            # Excel export - use RAW data
             from io import BytesIO
             buffer = BytesIO()
             with pd.ExcelWriter(buffer, engine='openpyxl') as writer:
-                display_df.to_excel(writer, index=False, sheet_name='Results')
+                results_df[display_columns].to_excel(writer, index=False, sheet_name='Results')
             
             st.download_button(
                 label="📥 Download Excel",
@@ -583,7 +583,10 @@ with tabs[2]:
 # ===========================
 with tabs[3]:
     if 'classified_results' in st.session_state:
-        render_coaching_interface(st.session_state.classified_results, supabase)
+        try:
+            render_coaching_interface(st.session_state.classified_results, supabase)
+        except Exception as e:
+            st.warning(f"Coaching interface unavailable.")
     else:
         st.info("🎓 Coaching insights will appear here after running classification")
 
@@ -592,7 +595,10 @@ with tabs[3]:
 # ===========================
 with tabs[4]:
     if 'classified_results' in st.session_state:
-        render_export_interface(st.session_state.classified_results, supabase)
+        try:
+            render_export_interface(st.session_state.classified_results, supabase)
+        except Exception as e:
+            st.warning(f"Export interface unavailable. Use download buttons in Classify tab.")
     else:
         st.info("📤 Export options will appear here after running classification")
 
