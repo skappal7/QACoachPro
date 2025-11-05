@@ -405,7 +405,14 @@ with tabs[1]:
                 batch_size=100,
                 show_progress=False
             )
-            
+            # DEBUG - First batch only
+            if i == 0:
+                st.write("🔍 DEBUG - First 3 results:")
+                for idx, result in enumerate(batch_results[:3]):
+                    st.json(result)
+                st.write("🔍 DEBUG - First transcript:")
+                st.text(batch[0][:300])
+                
             all_results.extend(batch_results)
             
             # Update progress
