@@ -203,18 +203,24 @@ with tabs[1]:
     with col1:
         selected_program = st.selectbox(
             "Select Program",
-            options=["Custom (Upload Rules)"] + programs,
-            help="Choose your program to load specific rules. Select 'Custom' to upload your own."
+            options=["All Programs (364K rules)"] + ["Custom (Upload Rules)"] + programs,
+            help="Choose your program to load specific rules. 'All Programs' tests against entire database (slower). 'Custom' to upload your own."
         )
     
     with col2:
-        if selected_program != "Custom (Upload Rules)":
+        if selected_program == "All Programs (364K rules)":
+            stats = st.session_state.rule_loader.get_stats()
+            st.metric("Rules Available", f"{stats['total_proximity_rules']:,}")
+            st.metric("Programs", f"{stats['total_programs']}")
+        elif selected_program != "Custom (Upload Rules)":
             # Show program stats
             proximity_rules, hierarchy = st.session_state.rule_loader.get_program_rules(selected_program)
             st.metric("Rules Available", f"{len(proximity_rules):,}")
             st.metric("Categories", f"{len(hierarchy):,}")
     
-    if selected_program != "Custom (Upload Rules)":
+    if selected_program == "All Programs (364K rules)":
+        st.warning(f"⚠️ **All Programs mode**: Testing against all {st.session_state.rule_loader.get_stats()['total_proximity_rules']:,} rules (slower but maximum coverage)")
+    elif selected_program != "Custom (Upload Rules)":
         st.success(f"✅ Selected: **{selected_program}** with {len(proximity_rules):,} proximity rules")
     
     # =============================
@@ -291,9 +297,17 @@ with tabs[1]:
             st.warning("⚠️ Please upload both hierarchy and proximity rules files")
             st.stop()
     else:
-        # Load program-specific rules
-        proximity_rules, hierarchy = st.session_state.rule_loader.get_program_rules(selected_program)
-        program_name = selected_program
+        # Load rules based on selection
+        if selected_program == "All Programs (364K rules)":
+            # Load ALL rules, no filtering
+            proximity_rules = st.session_state.rule_loader.all_proximity_rules
+            hierarchy = st.session_state.rule_loader.all_hierarchy
+            program_name = "All_Programs"
+            st.info(f"📊 Loaded all {len(proximity_rules):,} rules across all programs")
+        else:
+            # Load program-specific rules
+            proximity_rules, hierarchy = st.session_state.rule_loader.get_program_rules(selected_program)
+            program_name = selected_program
     
     # =============================
     # CLASSIFICATION SETTINGS
@@ -323,7 +337,11 @@ with tabs[1]:
     
     with col3:
         # Estimate time
-        est_time_per_transcript = 0.020  # 20ms average
+        if selected_program == "All Programs (364K rules)":
+            est_time_per_transcript = 0.050  # 50ms for all rules
+        else:
+            est_time_per_transcript = 0.020  # 20ms for single program
+        
         est_total_seconds = len(df) * est_time_per_transcript
         st.metric(
             "Estimated Time", 
