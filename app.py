@@ -26,8 +26,8 @@ from modules import (
 )
 
 # Import hybrid classification modules
-from modules.rule_loader import RuleLoader
 from modules.hybrid_classifier import HybridClassifier
+from modules.category_hierarchy import CategoryHierarchy
 
 # Page config
 st.set_page_config(
@@ -51,12 +51,19 @@ if not check_authentication(supabase):
 # Main app (authenticated user)
 render_sidebar_user_info(supabase)
 
-# Initialize Rule Loader (once per session)
-if 'rule_loader' not in st.session_state:
-    with st.spinner("Loading rule database..."):
-        st.session_state.rule_loader = RuleLoader(data_dir="data")
-        stats = st.session_state.rule_loader.get_stats()
-        st.sidebar.success(f"✅ Loaded {stats['total_proximity_rules']:,} rules across {stats['total_programs']} programs")
+# Load default rules and hierarchy
+@st.cache_data
+def load_default_rules():
+    rules_df = pd.read_csv('data/default_rules.csv')
+    hierarchy_df = pd.read_csv('data/category_hierarchy.csv')
+    return rules_df, hierarchy_df
+
+try:
+    default_rules, hierarchy_data = load_default_rules()
+    st.sidebar.success(f"✅ Loaded {len(default_rules):,} CCRE rules")
+except Exception as e:
+    st.sidebar.error(f"❌ Failed to load rules: {str(e)}")
+    st.stop()
 
 # Header
 st.title("🚀 AgentPulse AI - Hybrid Classification")
@@ -177,7 +184,7 @@ with tabs[0]:
 # TAB 2: Classify (HYBRID SYSTEM)
 # ===========================
 with tabs[1]:
-    st.header("🔍 Hybrid Classification Engine")
+    st.header("🔍 Classification Engine (CCRE)")
     
     # Check if data uploaded
     if 'uploaded_df' not in st.session_state:
@@ -188,132 +195,12 @@ with tabs[1]:
     transcript_col = st.session_state.transcript_col
     enable_pii = st.session_state.enable_pii
     
-    st.info(f"📊 Ready to classify {len(df):,} transcripts")
-    
-    # =============================
-    # PROGRAM SELECTION
-    # =============================
-    st.subheader("🎯 Step 1: Select Program")
-    
-    # Get available programs
-    programs = st.session_state.rule_loader.get_all_programs()
-    
-    col1, col2 = st.columns([2, 1])
-    
-    with col1:
-        selected_program = st.selectbox(
-            "Select Program",
-            options=["All Programs (364K rules)"] + ["Custom (Upload Rules)"] + programs,
-            help="Choose your program to load specific rules. 'All Programs' tests against entire database (slower). 'Custom' to upload your own."
-        )
-    
-    with col2:
-        if selected_program == "All Programs (364K rules)":
-            stats = st.session_state.rule_loader.get_stats()
-            st.metric("Rules Available", f"{stats['total_proximity_rules']:,}")
-            st.metric("Programs", f"{stats['total_programs']}")
-        elif selected_program != "Custom (Upload Rules)":
-            # Show program stats
-            proximity_rules, hierarchy = st.session_state.rule_loader.get_program_rules(selected_program)
-            st.metric("Rules Available", f"{len(proximity_rules):,}")
-            st.metric("Categories", f"{len(hierarchy):,}")
-    
-    if selected_program == "All Programs (364K rules)":
-        st.warning(f"⚠️ **All Programs mode**: Testing against all {st.session_state.rule_loader.get_stats()['total_proximity_rules']:,} rules (slower but maximum coverage)")
-    elif selected_program != "Custom (Upload Rules)":
-        st.success(f"✅ Selected: **{selected_program}** with {len(proximity_rules):,} proximity rules")
-    
-    # =============================
-    # CUSTOM RULES UPLOAD (Optional)
-    # =============================
-    if selected_program == "Custom (Upload Rules)":
-        st.subheader("📤 Step 2: Upload Custom Rules")
-        
-        st.info("💡 **Tip**: Your files should match the format of proximity_rules.csv and category_hierarchy.csv")
-        
-        col1, col2 = st.columns(2)
-        
-        with col1:
-            custom_hierarchy_file = st.file_uploader(
-                "Upload Hierarchy CSV",
-                type=['csv'],
-                key="custom_hierarchy",
-                help="CSV with columns: Program, CatNo, L1, L2, L3, L4"
-            )
-            
-            if custom_hierarchy_file:
-                custom_hierarchy = pd.read_csv(custom_hierarchy_file)
-                st.success(f"✅ Loaded {len(custom_hierarchy):,} categories")
-                
-                with st.expander("👀 Preview"):
-                    st.dataframe(custom_hierarchy.head(), use_container_width=True)
-        
-        with col2:
-            custom_proximity_file = st.file_uploader(
-                "Upload Proximity Rules CSV",
-                type=['csv'],
-                key="custom_proximity",
-                help="CSV with columns: Program, CatNo, Term1, Operator1, Term2, etc."
-            )
-            
-            if custom_proximity_file:
-                custom_proximity = pd.read_csv(custom_proximity_file)
-                st.success(f"✅ Loaded {len(custom_proximity):,} rules")
-                
-                with st.expander("👀 Preview"):
-                    st.dataframe(custom_proximity.head(), use_container_width=True)
-        
-        # Merge mode
-        if custom_hierarchy_file and custom_proximity_file:
-            merge_mode = st.radio(
-                "Mode",
-                ["Replace (use only custom rules)", "Extend (add to default rules)"],
-                help="Replace: Use only your rules. Extend: Combine your rules with defaults."
-            )
-            
-            # Validate
-            is_valid, msg = st.session_state.rule_loader.validate_custom_upload(
-                custom_proximity, custom_hierarchy
-            )
-            
-            if is_valid:
-                st.success("✅ Custom rules validated successfully")
-                
-                # Merge rules
-                mode = "replace" if "Replace" in merge_mode else "extend"
-                proximity_rules, hierarchy = st.session_state.rule_loader.merge_custom_rules(
-                    custom_proximity, custom_hierarchy,
-                    base_proximity=pd.DataFrame(),
-                    base_hierarchy=pd.DataFrame(),
-                    mode=mode
-                )
-                
-                program_name = custom_hierarchy['Program'].iloc[0] if not custom_hierarchy.empty else "Custom"
-                st.info(f"📊 Ready with {len(proximity_rules):,} rules and {len(hierarchy):,} categories")
-            else:
-                st.error(f"❌ Validation failed: {msg}")
-                st.stop()
-        else:
-            st.warning("⚠️ Please upload both hierarchy and proximity rules files")
-            st.stop()
-    else:
-        # Load rules based on selection
-        if selected_program == "All Programs (364K rules)":
-            # Load ALL rules, no filtering
-            proximity_rules = st.session_state.rule_loader.all_proximity_rules
-            hierarchy = st.session_state.rule_loader.all_hierarchy
-            program_name = "All_Programs"
-            st.info(f"📊 Loaded all {len(proximity_rules):,} rules across all programs")
-        else:
-            # Load program-specific rules
-            proximity_rules, hierarchy = st.session_state.rule_loader.get_program_rules(selected_program)
-            program_name = selected_program
+    st.info(f"📊 Ready to classify {len(df):,} transcripts using {len(default_rules):,} CCRE rules")
     
     # =============================
     # CLASSIFICATION SETTINGS
     # =============================
-    st.markdown("---")
-    st.subheader("⚙️ Step 3: Classification Settings")
+    st.subheader("⚙️ Classification Settings")
     
     col1, col2, col3 = st.columns(3)
     
@@ -328,20 +215,16 @@ with tabs[1]:
     with col2:
         confidence_threshold = st.slider(
             "Confidence Threshold",
-            min_value=0.50,
-            max_value=0.95,
-            value=0.60,
+            min_value=0.30,
+            max_value=0.90,
+            value=0.40,
             step=0.05,
-            help="Minimum confidence to accept classification"
+            help="Lower threshold = more matches (default 0.40 for better coverage)"
         )
     
     with col3:
         # Estimate time
-        if selected_program == "All Programs (364K rules)":
-            est_time_per_transcript = 0.050  # 50ms for all rules
-        else:
-            est_time_per_transcript = 0.020  # 20ms for single program
-        
+        est_time_per_transcript = 0.005  # 5ms with CCRE
         est_total_seconds = len(df) * est_time_per_transcript
         st.metric(
             "Estimated Time", 
@@ -357,19 +240,20 @@ with tabs[1]:
         
         start_time = time.time()
         
-        # Initialize Hybrid Classifier
-        with st.spinner("🔧 Initializing Hybrid Classifier..."):
+        # Initialize Classifier
+        with st.spinner("🔧 Initializing Classifier..."):
             try:
                 classifier = HybridClassifier(
-                    proximity_rules=proximity_rules,
-                    hierarchy=hierarchy,
-                    user_examples=None,  # TODO: Load from Supabase
-                    fallback_rules=st.session_state.rule_loader.get_default_fallback_rules(),
-                    program=program_name
+                    proximity_rules=pd.DataFrame(),  # Not used
+                    hierarchy=hierarchy_data,
+                    user_examples=None,
+                    fallback_rules=default_rules,  # Use CCRE rules
+                    program="CCRE"
                 )
                 st.success("✅ Classifier initialized")
             except Exception as e:
                 st.error(f"❌ Failed to initialize classifier: {str(e)}")
+                st.exception(e)
                 st.stop()
         
         # Initialize PII redactor if needed
@@ -397,12 +281,6 @@ with tabs[1]:
         
         st.info("🧹 Cleaning transcripts (removing timestamps and labels)...")
         transcripts = [clean_transcript(t) for t in transcripts]
-        transcripts = [clean_transcript(t) for t in transcripts]
-
-        # DEBUG - Show cleaned transcript
-        st.write("🔍 CLEANED transcript (first 300 chars):")
-        st.text(transcripts[0][:300])
-        
         
         # Redact PII if enabled
         if enable_pii:
@@ -565,7 +443,7 @@ with tabs[1]:
             st.download_button(
                 label="📥 Download CSV",
                 data=csv,
-                file_name=f"classified_results_{program_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                file_name=f"classified_results_CCRE_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
                 mime="text/csv",
                 use_container_width=True
             )
@@ -580,7 +458,7 @@ with tabs[1]:
             st.download_button(
                 label="📥 Download Excel",
                 data=buffer.getvalue(),
-                file_name=f"classified_results_{program_name}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
+                file_name=f"classified_results_CCRE_{datetime.now().strftime('%Y%m%d_%H%M%S')}.xlsx",
                 mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
                 use_container_width=True
             )
